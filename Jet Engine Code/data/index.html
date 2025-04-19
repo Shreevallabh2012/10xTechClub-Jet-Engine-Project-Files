@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="X-UA-Compatible" content="ie=edge" />
+  <title>Jet Engine Dashboard</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>🚀 Jet Engine Dashboard</h1>
+      <p>Live Telemetry from ESP32</p>
+    </header>
+
+    <p id="last-update" class="timestamp">Updated at --</p>
+
+    <div class="row">
+      <!-- DHT11 Sensor -->
+      <section class="card">
+        <h2>Engine Parameters</h2>
+        <div class="data-row">
+          <p>🌡️ Temperature: <span id="temperature">--</span>°C</p>
+          <p>💧 Humidity: <span id="humidity">--</span>%</p>
+        </div>
+      </section>
+
+      <!-- MQ135 Sensor -->
+      <section class="card">
+        <h2>Near Engine Atmosphere</h2>
+        <ul class="mq135-data-list">
+          <li>🌫️ CO2: <span id="co2">--</span> ppm</li>
+          <li>🧪 NH3: <span id="nh3">--</span> ppm</li>
+          <li>🚗 NOx: <span id="nox">--</span> ppm</li>
+          <li>🍷 Alcohol: <span id="alcohol">--</span> ppm</li>
+          <li>🛢️ Benzene: <span id="benzene">--</span> ppm</li>
+          <li>🔥 Smoke: <span id="smoke">--</span> ppm</li>
+          <li>📊 AQI: <span id="aqi">--</span></li>
+        </ul>
+      </section>
+
+      <!-- Flame Sensor -->
+      <section class="card" id="flame-card">
+        <h2>Fire Alert</h2>
+        <p>🔥 Status: <span id="flame">--</span></p>
+        <p id="flame-warning">🔥 Warning! Something Wrong, Please check the system...</p>
+      </section>
+    </div>
+
+   
+
+    <!-- Navigation Button -->
+    <div class="nav-container">
+      <button onclick="location.href='basic.html'" class="nav-button">ℹ️ JET ENGINE INFO</button>
+    </div>
+    
+   
+    <footer>
+      <p>&copy; 2025 | Built by Jet Engine Team</p>
+    </footer>
+  </div>
+  <script src="script.js"></script>
+</body>
+</html>

@@ -1,0 +1,452 @@
+/*
+  Project: Jet Engine Simulation using ESP32
+  Features:
+    - Air Quality Monitoring (MQ135)
+    - Temperature & Humidity Monitoring (DHT11)
+    - Flame Detection
+    - Real-time Web Interface via WebSocket
+    - DC Motor Control using L298N Motor Driver
+
+  [Future Support]:
+    - Can be extended to support BLDC motor via ESC (Electronic Speed Controller)
+    - Only one PWM output needed for BLDC control
+    - Adjust WebSocket logic and PWM signal range for ESC control
+*/
+
+// ========== INCLUDE REQUIRED LIBRARIES ==========
+#include <Arduino.h>            // Core Arduino functions
+#include <DHT.h>                // DHT sensor library for temperature & humidity
+#include <WiFi.h>               // For setting up Wi-Fi access point
+#include <WebServer.h>          // To serve files and handle HTTP requests
+#include <WebSocketsServer.h>   // For real-time communication using WebSockets
+#include <LittleFS.h>           // Filesystem to store and serve HTML, CSS, JS
+#include <Adafruit_NeoPixel.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <OneButton.h>
+
+
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET    -1
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+uint8_t fanFrame = 0;
+unsigned long lastFanUpdate = 0;
+const unsigned long fanFrameDelay = 150;
+
+// Fan Icon Frame 1
+const unsigned char fan1 [] PROGMEM = {
+  0x18,0x3C,0x7E,0xFF,
+  0xE7,0xC3,0x81,0x81,
+  0x81,0x81,0xC3,0xE7,
+  0xFF,0x7E,0x3C,0x18
+};
+
+// Fan Icon Frame 2 (rotated)
+const unsigned char fan2 [] PROGMEM = {
+  0x18,0x3C,0x66,0xC3,
+  0x99,0xBD,0xFF,0x7E,
+  0x7E,0xFF,0xBD,0x99,
+  0xC3,0x66,0x3C,0x18
+};
+
+// Fan Icon Frame 3 (different angle)
+const unsigned char fan3 [] PROGMEM = {
+  0x18,0x24,0x42,0x99,
+  0xBD,0xC3,0xE7,0xFF,
+  0xFF,0xE7,0xC3,0xBD,
+  0x99,0x42,0x24,0x18
+};
+
+
+
+// ========== PIN DEFINITIONS FOR SENSORS & MOTOR ==========
+// DHT11 Sensor (Temperature and Humidity)
+#define DHTPIN 27   
+#define DHTTYPE DHT11
+
+// MQ135 Gas Sensor (Analog pin)
+#define MQ135_PIN 34   
+
+// Flame Sensor (Analog pin)
+#define FLAME_SENSOR_PIN 33
+
+// L298N Motor Driver Pins
+#define MOTOR_EN_PIN 14       // PWM Enable Pin for motor speed
+#define MOTOR_IN1_PIN 25      // Motor direction pin 1
+#define MOTOR_IN2_PIN 26      // Motor direction pin 2
+
+/*If using a BLDC motor with ESC (Electronic Speed Controller),only a single PWM control pin (e.g., MOTOR_BLDC_PIN) will be required,and comment the L298 Motor driver part
+#define MOTOR_BLDC_PIN 14
+*/
+#define NEOPIXEL_PIN 35     // GPIO pin connected to NeoPixel DIN
+#define NUM_PIXELS 10       // Number of NeoPixels
+
+Adafruit_NeoPixel pixels(NUM_PIXELS, NEOPIXEL_PIN, NEO_GRB + NEO_KHZ800);
+
+// Load resistance in kilo-ohms used for MQ135 calculation
+#define RL_VALUE 5   
+
+#define BUTTON1_PIN 4   // Green - Start Engine / Mode Switch
+#define BUTTON2_PIN 5   // Yellow - Stop in Manual Mode
+#define BUTTON3_PIN 17   // Red - Emergency Stop
+
+#define POT_PIN 32
+#define RED_LED_PIN 18
+#define GREEN_LED_PIN 19
+#define BUZZER_PIN 21
+
+bool engineRunning = false;
+bool isManualMode = true;
+
+OneButton button1(BUTTON1_PIN, true);  // active low
+OneButton button2(BUTTON2_PIN, true);  // active low
+
+
+// ========== OBJECT CREATION ==========
+DHT dht(DHTPIN, DHTTYPE);       // Initialize DHT sensor
+WebServer server(80);           // HTTP server on port 80
+WebSocketsServer webSocket(81); // WebSocket server on port 81
+float R0 = 10.00;               // MQ135 baseline resistance (calibrated)
+
+// ========== WI-FI ACCESS POINT CREDENTIALS ==========
+const char* ssid = "Jet Engine";    // SSID name of ESP32 AP    
+const char* password = "12345678";  // Password of ESP32 AP
+
+// ========== AQI BREAKPOINT TABLES FOR DIFFERENT GASES ==========
+// These tables are used to convert gas concentrations into AQI values
+float breakpoints_CO2[][2]      = {{0, 0}, {1000, 50}, {2000, 100}, {3000, 150}, {4000, 200}, {5000, 300}, {6000, 400}, {7000, 500}};
+float breakpoints_NH3[][2]      = {{0, 0}, {100, 50}, {200, 100}, {300, 150}, {400, 200}, {500, 300}, {600, 400}, {700, 500}};
+float breakpoints_NOx[][2]      = {{0, 0}, {50, 50}, {100, 100}, {150, 150}, {200, 200}, {300, 300}, {400, 400}, {500, 500}};
+float breakpoints_Alcohol[][2]  = {{0, 0}, {50, 50}, {100, 100}, {150, 150}, {200, 200}, {300, 300}, {400, 400}, {500, 500}};
+float breakpoints_Benzene[][2]  = {{0, 0}, {1.6, 50}, {3.2, 100}, {4.8, 150}, {6.4, 200}, {8.0, 300}, {9.6, 400}, {11.2, 500}};
+float breakpoints_Smoke[][2]    = {{0, 0}, {50, 50}, {100, 100}, {150, 150}, {200, 200}, {300, 300}, {400, 400}, {500, 500}};
+
+//====================UTILITY FUNCTION===============
+// Calculates sensor resistance from ADC value using MQ135's formula
+float calculateResistance(int adcVal) {
+  return ((4095.0 / adcVal) - 1.0) * RL_VALUE;
+}
+// Calculates gas concentration using log-log characteristics
+float calculateConcentration(float ratio, float slope, float intercept) {
+  return pow(10, ((log10(ratio) - intercept) / slope));
+}
+// Maps gas concentration to AQI using standard breakpoint ranges
+float calculateAQI(float conc, float breakpoints[][2], int len) {
+  for (int i = 0; i < len - 1; i++) {
+    if (conc >= breakpoints[i][0] && conc < breakpoints[i + 1][0]) {
+      float AQI_low = breakpoints[i][1], AQI_high = breakpoints[i + 1][1];
+      float conc_low = breakpoints[i][0], conc_high = breakpoints[i + 1][0];
+      return ((AQI_high - AQI_low) / (conc_high - conc_low)) * (conc - conc_low) + AQI_low;
+    }
+  }
+  return -1;      // Return -1 if out of range
+}
+
+//===============FILE HANDLING FOR WEB UI==============
+// Handles reading and serving files stored in LittleFS
+// Converts file extension to content-type for browser rendering
+bool handleFileRead(String path) {
+  if (path.endsWith("/")) path += "index.html";   // Default route
+  String contentType = "text/plain";
+  if (path.endsWith(".html")) contentType = "text/html";
+  else if (path.endsWith(".css")) contentType = "text/css";
+  else if (path.endsWith(".js")) contentType = "application/javascript";
+  File file = LittleFS.open(path, "r");
+  if (file) {
+    server.streamFile(file, contentType);
+    file.close();
+    return true;
+  }
+  return false;   // File not found
+}
+
+void applyFireEffect(int intensity) {
+  float pulse = (sin(millis() / 200.0) + 1.0) / 2.0; // Smooth pulsing between 0–1
+  pulse = pow(pulse, 1.5); // Boost pulsing realism
+
+  for (int i = 0; i < NUM_PIXELS; i++) {
+    int flicker = random(-10, 10); // Slight flicker
+    int r = constrain((int)(intensity + flicker), 100, 255);
+    int g = constrain((int)(intensity * 0.3), 10, 80); // lower green for orange-red
+    int b = 0;
+
+    r = r * pulse;
+    g = g * pulse;
+
+    pixels.setPixelColor(i, pixels.Color(r, g, b));
+  }
+  pixels.show();
+}
+
+//==================WEBSOCKET LOGIC============================
+// Handles WebSocket events like new connection or messages from client
+void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t length) {
+  if (type == WStype_CONNECTED) {
+    IPAddress ip = webSocket.remoteIP(num);
+    Serial.printf("[%u] Connected: %s\n", num, ip.toString().c_str());
+    webSocket.sendTXT(num, "Connected to ESP32 WebSocket");
+  }
+  else if (type == WStype_TEXT) {
+    // Expected format: "MOTOR_SPEED:45"
+    String message = String((char*)payload);
+    if (message.startsWith("MOTOR_SPEED:")) {
+      int speed = message.substring(12).toInt();  // Extract speed value 0–100 from slider
+      int pwmVal = (speed < 10) ? 0 : map(speed, 10, 100, 80, 255); // Map to 8-bit PWM
+
+      // Always drive motor in forward direction
+      digitalWrite(MOTOR_IN1_PIN, HIGH);
+      digitalWrite(MOTOR_IN2_PIN, LOW);
+      // [BLDC Motor with ESC]
+  // Only one signal pin required (e.g., MOTOR_BLDC_PIN).
+  // Use a PWM value in ESC-compatible range:
+  // int escPWM = map(speed, 0, 100, 52, 102);  // ESC range (8-bit)
+  // ledcWrite(0, escPWM);                     // Send PWM to ESC
+    
+      ledcWrite(0, pwmVal); // Apply PWM signal
+      Serial.printf("DC Motor Speed: %d%% (PWM: %d)\n", speed, pwmVal);
+      
+      int ledIntensity = map(speed, 0, 100, 100, 255);
+      applyFireEffect(ledIntensity);  // <- Call updated LED fire booster effect
+
+    }
+    
+  }
+}
+
+//========SENSOR DATA COLLECTION AND WEBSOCKET BROADCAST===============
+void updateSensorData() {
+  // ----- MQ135 Gas Sensor -----
+  int sensorValue = analogRead(MQ135_PIN);
+  float Rs = calculateResistance(sensorValue);
+  float ratio = Rs / R0;
+
+  // Estimate PPM for each gas
+  float ppm_CO2      = calculateConcentration(ratio, -0.42, 0.37);
+  float ppm_NH3      = calculateConcentration(ratio, -0.45, 0.35);
+  float ppm_NOx      = calculateConcentration(ratio, -0.40, 0.30);
+  float ppm_Alcohol  = calculateConcentration(ratio, -0.35, 0.40);
+  float ppm_Benzene  = calculateConcentration(ratio, -0.42, 0.29);
+  float ppm_Smoke    = calculateConcentration(ratio, -0.50, 0.31);
+
+  // Convert to AQI using breakpoint tables
+  float AQI_CO2      = calculateAQI(ppm_CO2, breakpoints_CO2, 8);
+  float AQI_NH3      = calculateAQI(ppm_NH3, breakpoints_NH3, 8);
+  float AQI_NOx      = calculateAQI(ppm_NOx, breakpoints_NOx, 8);
+  float AQI_Alcohol  = calculateAQI(ppm_Alcohol, breakpoints_Alcohol, 8);
+  float AQI_Benzene  = calculateAQI(ppm_Benzene, breakpoints_Benzene, 8);
+  float AQI_Smoke    = calculateAQI(ppm_Smoke, breakpoints_Smoke, 8);
+
+  float finalAQI = max({AQI_CO2, AQI_NH3, AQI_NOx, AQI_Alcohol, AQI_Benzene, AQI_Smoke});
+
+  // ----- DHT11 -----
+  float temp = dht.readTemperature();
+  float humidity = dht.readHumidity();
+  if (isnan(temp) || isnan(humidity)) return;
+  Serial.print("Temperature");
+  Serial.println(temp);
+  Serial.print("Humidity");
+  Serial.println(humidity);
+
+  // ----- Flame Sensor -----
+  int flameAnalog = analogRead(FLAME_SENSOR_PIN);
+  Serial.print("flameAnalog:");
+  Serial.println(flameAnalog);
+  String flameStatus = (flameAnalog < 10) ? "1" : "0";
+  
+  // ----- Send Sensor Data via WebSocket -----
+  String data = "Temp:" + String(temp) +
+                ",Humidity:" + String(humidity) +
+                ",AQI:" + String(finalAQI) +
+                ",NH3:" + String(ppm_NH3) +
+                ",NOx:" + String(ppm_NOx) +
+                ",Alcohol:" + String(ppm_Alcohol) +
+                ",Benzene:" + String(ppm_Benzene) +
+                ",Smoke:" + String(ppm_Smoke) +
+                ",CO2:" + String(ppm_CO2) +
+                ",Flame:" + flameStatus;
+  webSocket.broadcastTXT(data);   // Real-time update to connected clients
+ 
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 0);
+  display.print("Temp: "); display.print(temp); display.println(" C");
+  display.print("Humidity: "); display.print(humidity); display.println(" %");
+  display.print("AQI: "); display.println(finalAQI);
+  display.print("Mode: ");
+  display.println(isManualMode ? "Manual" : "Web");
+  display.display();
+
+
+}
+
+void updateFanDisplay() {
+  display.clearDisplay();
+  display.setCursor(0, 0);
+  display.setTextSize(1);
+  display.setTextColor(WHITE);
+  display.println("Engine Running");
+
+  switch (fanFrame) {
+    case 0:
+      display.drawBitmap(100, 20, fan1, 16, 16, WHITE);
+      break;
+    case 1:
+      display.drawBitmap(100, 20, fan2, 16, 16, WHITE);
+      break;
+    case 2:
+      display.drawBitmap(100, 20, fan3, 16, 16, WHITE);
+      break;
+  }
+  fanFrame = (fanFrame + 1) % 3;
+  display.display();
+}
+
+// === BUTTON CALLBACKS ===
+void startButtonPressed() {
+  engineRunning = !engineRunning;
+  isManualMode = true;
+  Serial.println(engineRunning ? "Engine STARTED" : "Engine STOPPED");
+}
+
+void stopButtonPressed() {
+  if (isManualMode) {
+    engineRunning = false;
+    Serial.println("Engine STOPPED manually");
+  }
+}
+
+
+// ======SETUP FUNCTION========
+void setup() {
+  Serial.begin(115200);           // Start Serial Monitor
+  dht.begin();                    // Start Serial Monitor
+
+  // Set sensor pin modes
+  pinMode(MQ135_PIN, INPUT);
+  pinMode(FLAME_SENSOR_PIN, INPUT);
+
+  //-------L298N DC Motor Driver setup--------
+  pinMode(MOTOR_IN1_PIN, OUTPUT);
+  pinMode(MOTOR_IN2_PIN, OUTPUT);
+  digitalWrite(MOTOR_IN1_PIN, LOW);
+  digitalWrite(MOTOR_IN2_PIN, LOW);
+ 
+  // Manual Control
+  pinMode(BUTTON1_PIN, INPUT_PULLUP);
+  pinMode(BUTTON2_PIN, INPUT_PULLUP);
+  pinMode(RED_LED_PIN, OUTPUT);
+  pinMode(GREEN_LED_PIN, OUTPUT);
+  pinMode(BUZZER_PIN, OUTPUT);
+
+  digitalWrite(RED_LED_PIN, LOW);
+  digitalWrite(GREEN_LED_PIN, HIGH);  // System ready
+  digitalWrite(BUZZER_PIN, LOW);
+
+  // OLED INIT
+  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    Serial.println("OLED failed");
+    while (true);
+  }
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(10, 20);
+  display.println("Jet Engine Boot...");
+  display.display();
+  delay(2000);
+
+/*If using BLDC with ESC:
+//ESCs typically require PWM signals between 1000us (stop) to 2000us (full speed).You can use the Servo library or custom PWM to control it.
+ledcWrite(0, map(speed, 0, 100, 52, 102)); // 52 ≈ 1000us, 102 ≈ 2000us for 8-bit
+*/
+
+  // PWM setup for EN pin (Channel 0, 5kHz, 8-bit resolution)
+  ledcSetup(0, 5000, 8);
+  ledcAttachPin(MOTOR_EN_PIN, 0);
+  ledcWrite(0, 0);  // Start with 0% duty cycle
+
+    // ---- NeoPixel Initialization ----
+    pixels.begin();         // Initialize the NeoPixel library
+    pixels.setBrightness(255); // Start with 0 brightness
+    pixels.setPixelColor(0, pixels.Color(100, 0, 0)); // Turn off
+    pixels.show();          // Apply initial state
+  
+
+  // ----- Initialize File System -----
+  if (!LittleFS.begin()) {
+    Serial.println("LittleFS mount failed!");
+    return;
+  }
+
+  // ----- Start Wi-Fi Access Point -----
+  IPAddress local_IP(192, 168, 1, 125);
+  IPAddress gateway(192, 168, 0, 1);
+  IPAddress subnet(255, 255, 255, 0);
+  WiFi.softAPConfig(local_IP, gateway, subnet);
+  WiFi.softAP(ssid, password);
+  Serial.println("WiFi AP Started: " + WiFi.softAPIP().toString());
+
+  // ----- WebSocket Initialization -----
+  webSocket.begin();
+  webSocket.onEvent(webSocketEvent);
+
+  // ----- HTTP Server Setup -----
+  server.on("/", HTTP_GET, []() {
+    if (!handleFileRead("/index.html")) {
+      server.send(404, "text/plain", "Not Found");
+    }
+  });
+  server.onNotFound([]() {
+    if (!handleFileRead(server.uri())) {
+      server.send(404, "text/plain", "Not Found");
+    }
+  });
+  server.begin();     // Start HTTP server
+}
+
+// ----- Loop -----
+void loop() {
+  webSocket.loop();         // Keep WebSocket connection alive
+  server.handleClient();    // Respond to HTTP requests
+  updateSensorData();       // Read sensors and send updates every 1 sec
+  delay(600);   // Fixed delay (can be replaced with millis-based logic)
+
+  // Manual Jet Engine Control
+  static bool manualEngineOn = false;
+
+  if (digitalRead(BUTTON1_PIN) == LOW) {  // Start Engine
+    manualEngineOn = true;
+    digitalWrite(GREEN_LED_PIN, HIGH);
+    digitalWrite(RED_LED_PIN, LOW);
+    digitalWrite(BUZZER_PIN, HIGH);
+    delay(100);
+    digitalWrite(BUZZER_PIN, LOW);
+    Serial.println("Manual Engine Start Triggered");
+  }
+
+  if (digitalRead(BUTTON2_PIN) == LOW) {  // Stop Engine
+    manualEngineOn = false;
+    digitalWrite(GREEN_LED_PIN, LOW);
+    digitalWrite(RED_LED_PIN, HIGH);
+    digitalWrite(BUZZER_PIN, HIGH);
+    delay(100);
+    digitalWrite(BUZZER_PIN, LOW);
+    Serial.println("Manual Engine Stop Triggered");
+  }
+
+  if (manualEngineOn) {
+    int potValue = analogRead(POT_PIN); // Read potentiometer (0–4095)
+    int pwmValue = map(potValue, 0, 4095, 80, 255); // Limit min PWM for startup
+    digitalWrite(MOTOR_IN1_PIN, HIGH);
+    digitalWrite(MOTOR_IN2_PIN, LOW);
+    ledcWrite(0, pwmValue);
+    applyFireEffect(map(pwmValue, 80, 255, 100, 255));
+    Serial.printf("Manual PWM: %d\n", pwmValue);
+  } else {
+    ledcWrite(0, 0);
+  }
+}

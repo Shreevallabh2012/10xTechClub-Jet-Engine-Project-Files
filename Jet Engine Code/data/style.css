@@ -1,0 +1,176 @@
+/* === Base Styles === */
+body {
+  font-family: 'Segoe UI', sans-serif;
+  margin: 0;
+  padding: 0;
+  background-color: #f4f7fb;
+  color: #333;
+}
+
+.container {
+  max-width: 1200px;
+  margin: auto;
+  padding: 20px;
+}
+
+/* === Header === */
+header {
+  text-align: center;
+  margin-bottom: 20px;
+}
+
+header h1 {
+  font-size: 2.8rem;
+  margin: 10px 0 5px;
+}
+
+header p {
+  color: #666;
+  font-size: 1.2rem;
+}
+
+.timestamp {
+  text-align: center;
+  font-style: italic;
+  color: #888;
+  margin-bottom: 20px;
+}
+
+/* === Layout === */
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+}
+
+/* === Card === */
+.card {
+  background: #fff;
+  border-radius: 12px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+  padding: 20px;
+  margin: 10px;
+  flex: 1 1 calc(33% - 20px);
+  min-width: 260px;
+  transition: 0.3s;
+}
+
+.card:hover {
+  transform: translateY(-4px);
+}
+
+.card h2, .card h3 {
+  margin-top: 0;
+}
+
+/* === Data List === */
+.mq135-data-list {
+  list-style: none;
+  padding: 0;
+  margin-top: 10px;
+}
+
+.mq135-data-list li {
+  padding: 8px 0;
+  border-bottom: 1px solid #eaeaea;
+}
+
+/* === Flame Warning === */
+#flame-warning {
+  color: red;
+  font-weight: bold;
+  font-size: 1em;
+  margin-top: 10px;
+  display: none;
+  animation: pulse 1s infinite;
+}
+
+@keyframes pulse {
+  0% { opacity: 1; }
+  50% { opacity: 0.4; }
+  100% { opacity: 1; }
+}
+
+/* === Motor Control === */
+.motor-control {
+  text-align: center;
+}
+
+#motorSpeed {
+  width: 100%;
+  margin: 10px 0;
+}
+
+#motorSpeedValue {
+  font-weight: bold;
+  font-size: 1.2rem;
+}
+
+/* === Navigation Button === */
+.nav-container {
+  text-align: center;
+  margin: 30px 0;
+}
+
+.nav-button {
+  background-color: #007bff;
+  color: white;
+  border: none;
+  padding: 12px 30px;
+  font-size: 16px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background-color 0.3s ease;
+}
+
+.nav-button:hover {
+  background-color: #0056b3;
+}
+
+/* === Footer === */
+footer {
+  text-align: center;
+  font-size: 0.9rem;
+  color: #777;
+  margin-top: 30px;
+}
+
+/* === Responsive Design === */
+@media (max-width: 768px) {
+  .row {
+    flex-direction: column;
+    align-items: center;
+  }
+
+  .card {
+    flex: 1 1 100%;
+    max-width: 95%;
+  }
+}
+.stop-button {
+  background-color: red;
+  color: white;
+  padding: 10px 18px;
+  border: none;
+  font-size: 16px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.mode-toggle-button {
+  background-color: #333;
+  color: white;
+  padding: 8px 16px;
+  border: none;
+  font-size: 14px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.stop-button:hover {
+  background-color: darkred;
+}
+
+.mode-toggle-button:hover {
+  background-color: #555;
+}
